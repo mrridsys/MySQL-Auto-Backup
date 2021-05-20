@@ -1,0 +1,174 @@
+#!/bin/bash
+#----------------------------------------
+# OPTIONS
+# RELEASED BY SATHISH S, RIDSYS
+# DATE - 03.12.2019
+#----------------------------------------
+CLIENT_NAME=RIDSYS
+#----------------------------------------
+USER='root'       	# MySQL User
+PASSWORD='root'   	# MySQL Password
+DAYS_TO_KEEP=0    	# 0 to keep forever
+LAST_BACKUP_KEEP=4      # 0 to keep forever
+GZIP=1            	# 1 = Compress || 0 = File 
+CASE=1	          	# Case 1 is Delay based || Case 2 is Realtime/fixed time Based ( Choose CASE 1 or 2 )
+DELAY=20        	# Delay time in sec
+TIME=16:32:00	  	# Set Time to take Backup
+RIDSYS_SERVER_IP=192.168.70.24
+SERVER_PATH=/mnt/InRidst01/ClientServerBackups
+BACKUP_PATH=/home/user/MYSQL_BACKUP/$CLIENT_NAME/
+
+#----------------------------------------
+# METHOD -1
+# ----- DELAY TIME BASED TO GET DATABASE BACKUP -----
+
+while [ $CASE == 1 ]
+
+CTIME=$(date '+%H.%M.%S')
+date=$(date -I)
+BACKUP_PATH_STORE=/home/user/MYSQL_BACKUP/$CLIENT_NAME/$date@$CTIME
+
+do
+
+echo -e "\nCLIENT NAME - $CLIENT_NAME \nDELAY - $DELAY \nBACKUP KEEP=$LAST_BACKUP_KEEP \n"
+echo -e "#---------------------------------------- \nTime to take Database Backup ... \n#----------------------------------------"
+
+# Create the backup folder
+
+if [ ! -d $BACKUP_PATH_STORE ]; then
+  mkdir -p $BACKUP_PATH_STORE
+fi
+# Get list of database names
+databases=`mysql -u $USER -p$PASSWORD -e "SHOW DATABASES;" | tr -d "|" | grep -v Database`
+
+for db in $databases;
+do
+
+  if [ $db == 'information_schema' ] || [ $db == 'performance_schema' ] || [ $db == 'mysql' ] || [ $db == 'sys' ]; then
+    echo "Skipping database: $db"
+    continue
+  fi
+
+  if [ "$GZIP" -eq 0 ] ; then
+    echo -e "\nBacking up database: $db without compression"
+    mysqldump -u $USER -p$PASSWORD --databases $db > $BACKUP_PATH_STORE/$CLIENT_NAME-$db-$date.sql
+    echo "$db Backup Completed ..."
+  else
+    echo -e "\nBacking up database: $db with compression"
+    mysqldump -u $USER -p$PASSWORD --databases $db | gzip -c > $BACKUP_PATH_STORE/$CLIENT_NAME-$db-$date.gz
+    echo "$db Backup Completed ..."
+  fi
+done
+sleep 5
+# Delete old backups from Local System
+SYSTEM_DIR_TCOUNT=$(ls -l $BACKUP_PATH | wc -l)    #--- System Backup Dirctory Total Count, it's include default foder ".." count +1 ---#
+ACOUNT=$(($SYSTEM_DIR_TCOUNT-1))  		   #--- Actual Backup Folder Count ---#
+echo -e "\nSystem Backup Folder Current Count is $ACOUNT\n"
+
+if (( $LAST_BACKUP_KEEP < $ACOUNT )) ; then
+
+  echo -e "Deleting backup older than Last $LAST_BACKUP_KEEP Backup From Local System ... \n"
+  OLD_FILES_COUNT=$(($ACOUNT-$LAST_BACKUP_KEEP))                   	#--- Find the no.of Older backup folder Count ---#
+  echo -e "Backup Folder having $OLD_FILES_COUNT Older \n"			 
+  GET_OLD_FILES=$(ls -tp $BACKUP_PATH | tail -$OLD_FILES_COUNT)		#--- Get the Older backup folder name ---#
+
+  cd $BACKUP_PATH    
+  sudo rm -r $(ls -tp | tail -$OLD_FILES_COUNT)				#--- Remove the older backup and Keep the Recent backup Folders ---#
+  echo -e "Oldest Backup From Local System \n$GET_OLD_FILES \n\nRemoved Sucessfully ..." 
+
+fi
+sleep 5
+
+###--- Transfer Backup Files from Client Server into External Media Storage ( USB Pendrive ) ---###
+
+CHECK_MEDIA_DIR=/media/user/DB_BACKUP
+USB_CONNECTION=/media/user/DB_BACKUP/MYSQL_BACKUP
+DB_BACKUP_PATH=/media/user/DB_BACKUP/MYSQL_BACKUP/$CLIENT_NAME/
+
+DO_USB_BACKUP () {
+# Create the backup folder from pendrive
+if [ ! -d $USB_CONNECTION ]; then
+	mkdir -p $USB_CONNECTION
+fi
+# Create the Client Name folder from pendrive
+if [ ! -d $DB_BACKUP_PATH ]; then
+	mkdir -p $DB_BACKUP_PATH
+fi
+#To Transfer Backup Files
+echo -e "Starting File Transfer ...\n"
+	cp -r $BACKUP_PATH_STORE $DB_BACKUP_PATH
+echo -e "File Transfer Done ...\n"
+sleep 5
+# Delete old backups from External Storage ( USB Pendrive )
+ EXT_DIR_TCOUNT=$(ls -l $DB_BACKUP_PATH | wc -l)      #--- External Storage ( USB Pendrive ) Backup Dirctory Total Count, it's include default foder ".." count +1 ---#
+ EXT_ACT_COUNT=$(($EXT_DIR_TCOUNT-1))  		      #--- Actual Backup Folder Count From External Storage ( USB Pendrive ) ---#
+echo "Exteral Storage ( USB ) Backup Folder Current Count is $EXT_ACT_COUNT"
+if (( $LAST_BACKUP_KEEP < $EXT_ACT_COUNT )) ; then
+
+  echo -e "Deleting backup older than Last $LAST_BACKUP_KEEP Backup From External Storage ...\n"
+  OLD_FILES_COUNT=$(($EXT_ACT_COUNT-$LAST_BACKUP_KEEP))                   	#--- Find the no.of Older backup folder Count From External Storage ( USB ) ---#
+  echo -e "Exteranl Storage Backup Folder having $OLD_FILES_COUNT Older \n"
+  GET_OLD_FILES=$(ls -tp $DB_BACKUP_PATH | tail -$OLD_FILES_COUNT)		#--- Get the Older backup folder name ---#
+
+  cd $DB_BACKUP_PATH
+  sudo rm -r $(ls -tp | tail -$OLD_FILES_COUNT)				#--- Remove the older backup and Keep the Recent backup Folders From External Storage ( USB ) ---#
+  echo -e "Oldest Backup From External Storage \n$GET_OLD_FILES \n\nRemoved Sucessfully ..."
+fi
+}
+# Check USB Connection and Create the backup folder from /media Directory
+
+TEST_FILE=/media/user/DB_BACKUP/test.txt
+if test -f "$TEST_FILE" ; then
+    echo -e "\nUSB Disk test File Found/Exists\n"
+else
+    echo -e "\nUSB Disk test File Not Found/Exists\n"
+    umount -l $CHECK_MEDIA_DIR #--- Unmount unexpectlely removed USB DISK ---#   
+fi
+
+STATUS=$(lsblk -f | grep -wq DB_BACKUP && echo Connected || echo Not_Connected)
+
+case "$STATUS" in
+"Connected")
+if [ ! -d $CHECK_MEDIA_DIR ]; then
+	mkdir -p $CHECK_MEDIA_DIR
+fi
+echo -e "\n#--------------------------- \n USB CONNECTED \n#---------------------------"
+echo -e "\nCHECK USB IS MOUNTED OR NOT ...\n"
+
+  if mountpoint -q $CHECK_MEDIA_DIR
+  then
+   echo -e " USB Already Mounted to $CHECK_MEDIA_DIR ... \n"
+	DO_USB_BACKUP    #--- Function Call DO_USB_BACKUP ---#
+  else
+   echo -e "USB Not Mounted to $CHECK_MEDIA_DIR \n"
+   echo -e " Re-Mount USB Disk \n"
+	mount -L DB_BACKUP $CHECK_MEDIA_DIR 
+   echo -e " USB Mounted to $CHECK_MEDIA_DIR Successfully ... \n"
+	if [ ! -f $TEST_FILE ]; then
+	touch $TEST_FILE
+	fi
+	DO_USB_BACKUP    #--- Function Call DO_USB_BACKUP ---#
+  fi
+;;
+"Not_Connected")
+	echo -e "\n#--------------------------- \n USB NOT-CONNECTED \n#---------------------------"
+	echo -e "\nCHECK USB IS MOUNTED PATH IS PRESENT OR NOT ...\n"
+
+DUMY_PATH_CHECK=$(test -d "$USB_CONNECTION" && echo "Found" || echo "Not_Exists")
+
+	case "$DUMY_PATH_CHECK" in
+	"Found")
+	echo -e "Dumy Path /media/user/DB_BACKUP/MYSQL_BACKUP Found ...\n"
+	umount -l $CHECK_MEDIA_DIR
+	;;
+	"Not_Exists")
+	echo -e "Dumy Path /media/user/DB_BACKUP/MYSQL_BACKUP Not Exists ...\n"
+	umount -l $CHECK_MEDIA_DIR
+	;;
+	esac
+;;
+esac
+echo -e "\n#---------------------------------------- \nWAIT FOR NEXT TIME TO TAKE BACKUP ... \n#----------------------------------------"
+sleep $DELAY
+done
+
